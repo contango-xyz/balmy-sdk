@@ -34,9 +34,11 @@ Ajv validates each entire success envelope once, before destructuring or bigint
 conversion: string `code: "0"`, nonempty array data, required router/transaction
 fields, decimal integer strings, EVM addresses and nonempty even-length calldata.
 Both swap and approval use the same transport boundary and existing `failed(...)`
-error model. Ajv 8.12.0 was already locked through tooling; it is declared as an
-exact runtime dependency because production validation uses it. That manifest
-and lockfile edit needs coordination with CTG-835 before rebase/publication.
+error model. Ajv 8.12.0 is an exact runtime dependency because production
+validation uses it. After CTG-835 removed the tooling that previously supplied
+Ajv, Yarn 1.22.22 regenerated its six lock entries from the merged foundation,
+preserving Ajv's tested version, registry URL and integrity. The regenerated
+transitive punycode entry resolves to 2.3.1.
 
 The swap docs call `tx.gas` an estimated gas limit, recommend a 50% increase and
 point to another endpoint for accuracy. This repair preserves the adapter's
@@ -59,12 +61,14 @@ helpers enter production. No provider, credential or enablement change is part
 of this repair. Live integration tests are outside Stage 2a and must not be run
 for its verification.
 
-CTG-835 owns common test infrastructure and the safe offline CI gate. CTG-832
-publication waits for that foundation to merge into fork `main`, then requires
-rebase, revalidation and independent review of the exact published head. The
+CTG-835 owns common test infrastructure and the safe offline CI gate. Its merged
+foundation is `4cbe856d8fc86379edb33cfe19da384d36d7ab26`; CTG-832 rebases onto
+that commit and runs its complete offline gate before publication. Independent
+review uses the exact published head. The
 first CTG-836 consumer gitlink must include both reviewed, merged changes.
 
-App-QA waiver to record for this stage: this is an offline adapter-only change
-with no app or consumer edit, so app QA is deferred to CTG-836 adoption. That
-waiver still needs the squad's approval record; it is not an app-QA PASS.
+The [approved replacement plan](https://multica.int.contangov3.com/issues/CTG-827#comment-01a11c05-176f-7cba-98c3-0080440c5ec2)
+carries the Stage 2a app-QA waiver forward: this is an offline adapter-only change
+with no app or consumer edit, so app QA belongs to CTG-836 adoption. This waiver
+is not an app-QA PASS.
 Signing acceptance, chain support and gas semantics also remain Stage 2b gaps.
