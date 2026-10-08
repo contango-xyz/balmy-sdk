@@ -10,7 +10,8 @@ Official documentation checked on 2026-10-08:
 - [Swap](https://web3.okx.com/onchainos/dev-docs/trade/dex-swap): the V6 swap
   request uses `chainIndex`, integer base-unit `amount`, `slippagePercent` and
   `userWalletAddress`. Slippage is a percentage: `0.5` means 0.5%, so the SDK
-  percentage is sent unchanged. The optional `swapReceiverAddress` carries a
+  percentage is sent unchanged, in decimal notation even for very small values.
+  The optional `swapReceiverAddress` carries a
   distinct recipient; omission leaves the documented taker default.
 - [Approval](https://web3.okx.com/onchainos/dev-docs/trade/dex-approve-transaction):
   V6 approval uses `chainIndex`, `tokenContractAddress` and `approveAmount` and
@@ -46,8 +47,12 @@ existing estimate mapping, without adding a buffer or another request. Missing
 or malformed gas fails the source; its availability and suitability per chain
 are unresolved. Missing/null `tx.value` retains the existing zero default.
 
-HTTP errors, rejected requests, invalid JSON and invalid/application-error
-envelopes all become source failures with fixed diagnostic text. The adapter
+HTTP errors, invalid JSON and invalid/application-error envelopes use the existing
+`failed(...)` model with fixed diagnostic text. Transport failures preserve the
+consumer's unavailable classification: a direct timeout becomes a fresh
+`TimeoutError`, and other rejected requests become an empty `AggregateError`.
+Both carry safe descriptions; the timeout uses the configured duration or
+FetchService's default of five minutes. The adapter
 discards provider messages, bodies and original exceptions: even a truncated
 message can echo credentials, signatures or a signed URL. Ajv validation errors
 are not exposed either. Fixtures cover credentials shorter than eight characters

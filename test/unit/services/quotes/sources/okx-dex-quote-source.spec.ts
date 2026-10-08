@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { Addresses, Uint } from '@shared/constants';
 import { FailedToGenerateQuoteError } from '@services/quotes/errors';
+import { TimeoutError } from '@shared/timeouts';
 import { jsonResponse, okxFixture, OKX_CONFIG } from './fixtures/okx';
 import swap from './fixtures/okx-swap.json';
 import approval from './fixtures/okx-approval.json';
@@ -33,7 +34,15 @@ describe('OKX V6 offline quote source', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it.each([0, 0.03, 0.5, 1, 100])('sends %s percent unchanged, exact integer amounts and a distinct recipient', async (slippage) => {
+  it.each([
+    [0, '0'],
+    [0.03, '0.03'],
+    [0.5, '0.5'],
+    [1, '1'],
+    [100, '100'],
+    [0.0000001, '0.0000001'],
+    [0.0000001234567890123456, '0.0000001234567890123456'],
+  ])('sends %s percent unchanged, exact integer amounts and a distinct recipient', async (slippage, expectedSlippage) => {
     const { source, params, fetch } = okxFixture();
     await source.quote({ ...params, request: { ...params.request, config: { ...params.request.config, slippagePercentage: slippage } } });
     const urls = fetch.mock.calls.map(([input]) => new URL(String(input)));
@@ -44,7 +53,7 @@ describe('OKX V6 offline quote source', () => {
       amount: '900719925474099312345',
       fromTokenAddress: params.request.sellToken,
       toTokenAddress: params.request.buyToken,
-      slippagePercent: String(slippage),
+      slippagePercent: expectedSlippage,
       userWalletAddress: '0x0000000000000000000000000000000000000003',
       swapReceiverAddress: '0x0000000000000000000000000000000000000004',
     });
@@ -150,7 +159,7 @@ describe('OKX V6 offline quote source', () => {
   });
 
   it.each(['swap', 'approve-transaction'])('removes credentials and request details from every %s error path', async (endpoint) => {
-    for (const mode of ['http', 'application', 'malformed', 'transport', 'json']) {
+    for (const mode of ['http', 'application', 'malformed', 'transport', 'aggregate', 'timeout', 'aggregate-timeout', 'non-error', 'json']) {
       const signatures: string[] = [];
       const urls: string[] = [];
       const { source, params } = okxFixture((url, init) => {
@@ -160,17 +169,39 @@ describe('OKX V6 offline quote source', () => {
         urls.push(url.href);
         const leak = JSON.stringify({ ...OKX_CONFIG, signature, url: url.href, headers: Object.fromEntries(new Headers(init?.headers)) });
         if (mode === 'transport') throw new Error(leak);
+        if (mode === 'aggregate') throw Object.assign(new AggregateError([new Error(leak)], leak), { cause: new Error(leak) });
+        if (mode === 'timeout') throw new TimeoutError(leak, '5s');
+        if (mode === 'aggregate-timeout') throw new AggregateError([new TimeoutError(leak, '5s')], leak);
+        if (mode === 'non-error') throw leak;
         if (mode === 'json') return new Response(`invalid JSON ${leak}`);
         if (mode === 'http') return new Response(leak, { status: 401 });
         if (mode === 'application') return jsonResponse({ code: '50050', msg: leak, data: [] });
         return jsonResponse({ code: '0', msg: leak, data: [{ routerResult: { toTokenAmount: leak } }] });
       });
       const error: unknown = await source.quote(params).catch((failure: unknown) => failure);
-      expect(error).toBeInstanceOf(FailedToGenerateQuoteError);
+      if (mode === 'timeout') {
+        expect(error).toBeInstanceOf(TimeoutError);
+        expect(String(error)).toBe('Error: OKX request timeouted at 5s');
+      } else if (['transport', 'aggregate', 'aggregate-timeout', 'non-error'].includes(mode)) {
+        expect(error).toBeInstanceOf(AggregateError);
+        if (error instanceof AggregateError) expect(error.errors).toEqual([]);
+      } else {
+        expect(error).toBeInstanceOf(FailedToGenerateQuoteError);
+      }
+      expect(error).not.toHaveProperty('cause');
       const text = String(error);
       [...Object.values(OKX_CONFIG), ...signatures, ...urls, 'web3.okx.com', 'OK-ACCESS', 'chainIndex=', 'tokenContractAddress='].forEach(
         (sensitive) => expect(text).not.toContain(sensitive)
       );
     }
+  });
+
+  it('uses FetchService’s default timeout when a direct timeout has no configured duration', async () => {
+    const { source, params } = okxFixture(() => {
+      throw new TimeoutError('sensitive URL', '5m');
+    });
+    await expect(
+      source.quote({ ...params, request: { ...params.request, config: { ...params.request.config, timeout: undefined } } })
+    ).rejects.toThrow(new TimeoutError('OKX request', '5m'));
   });
 });

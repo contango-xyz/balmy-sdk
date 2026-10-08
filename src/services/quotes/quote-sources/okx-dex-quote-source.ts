@@ -7,6 +7,7 @@ import { IFetchService } from '@services/fetch';
 import { Address, ChainId, TimeString } from '@types';
 import { Addresses, Uint } from '@shared/constants';
 import { isSameAddress } from '@shared/utils';
+import { TimeoutError } from '@shared/timeouts';
 import { ValidateFunction } from 'ajv';
 import { isOKXApprovalResponse, isOKXSwapResponse } from './okx-dex-response';
 
@@ -143,7 +144,7 @@ async function calculateQuote({
     amount: order.sellAmount.toString(),
     fromTokenAddress: sellToken,
     toTokenAddress: buyToken,
-    slippagePercent: slippagePercentage.toString(),
+    slippagePercent: slippagePercentage.toLocaleString('en-US', { useGrouping: false, maximumSignificantDigits: 21 }),
     userWalletAddress: takeFrom,
     swapReceiverAddress: recipient,
   };
@@ -193,9 +194,10 @@ async function fetch<T>({
   };
 
   const url = `https://web3.okx.com${path}`;
-  const response = await fetchService
-    .fetch(url, { timeout, headers })
-    .catch(() => failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'OKX request failed'));
+  const response = await fetchService.fetch(url, { timeout, headers }).catch((error: unknown) => {
+    if (error instanceof TimeoutError) throw new TimeoutError('OKX request', timeout ?? '5m');
+    throw new AggregateError([], 'OKX request failed');
+  });
   if (!response.ok) {
     failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'OKX HTTP request failed');
   }
