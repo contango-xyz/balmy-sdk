@@ -3,11 +3,12 @@
 // (child processes, workers, raw UDP) may only be loaded by the reviewed guard files in ALLOWED.
 // Reads each file's syntax tree, so only real module loading counts: static import/export-from, import x = require(),
 // require(), import() and jest.requireActual/requireMock. A quoted name in a comment or a string is ignored.
-// Scans tracked AND untracked .ts/.js/.mjs/.cjs files, with or without the node: prefix.
+// Scans tracked AND untracked .ts/.js/.mjs/.cjs files, with or without the node: prefix. Links are not followed: a symbolic
+// link (to a file, a directory or nothing) or a special file outside the skipped root directories fails as uninspected.
 // A computed module name is not found here; the kernel-isolated run (scripts/test-unit-isolated.sh) is the boundary for it.
 // `--self-test` proves the check passes the reviewed files and fails on every forbidden form.
-// Exit 0: clean. Exit 1: forbidden import(s). Exit 2: a directory or file could not be read, so the tree was NOT inspected;
-// an unreadable source is never treated as a clean one.
+// Exit 0: clean. Exit 1: forbidden import(s). Exit 2: a directory, file or link could not be inspected, so the tree was NOT
+// inspected; an unreadable or linked source is never treated as a clean one.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -58,8 +59,11 @@ const inspected = (what, target, read) => {
 const sourceFiles = (root, io, directory = '') =>
   inspected('list', path.join(root, directory), () => io.readdirSync(path.join(root, directory), { withFileTypes: true })).flatMap((entry) => {
     const relative = path.posix.join(directory, entry.name);
-    if (entry.isDirectory()) return directory === '' && SKIPPED_DIRECTORIES.has(entry.name) ? [] : sourceFiles(root, io, relative);
-    return entry.isFile() && SOURCE_FILE.test(entry.name) ? [relative] : [];
+    if (directory === '' && SKIPPED_DIRECTORIES.has(entry.name)) return [];
+    if (entry.isDirectory()) return sourceFiles(root, io, relative);
+    if (entry.isFile()) return SOURCE_FILE.test(entry.name) ? [relative] : [];
+    const kind = entry.isSymbolicLink() ? 'a symbolic link' : 'neither a regular file nor a directory';
+    throw new UninspectedSourceError(`could not inspect ${path.join(root, relative)}: it is ${kind}, which is not followed`);
   });
 
 const scan = (root, allowed = ALLOWED, io = fs) =>
@@ -91,13 +95,25 @@ const failingIo = (failOn) => {
 const selfTest = () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bypass-imports-'));
   const tree = path.join(tmp, 'tree');
-  const fixture = (files = {}) => {
+  const fixture = (files = {}, links = {}) => {
     fs.rmSync(tree, { recursive: true, force: true });
     const all = { ...Object.fromEntries(ALLOWED.map((entry) => [entry.split(':')[0], undefined])), ...files };
     for (const [file, content] of Object.entries(all)) {
       fs.mkdirSync(path.dirname(path.join(tree, file)), { recursive: true });
       // the reviewed files are copied from the real tree, so the test cannot drift from what the gate scans
       fs.writeFileSync(path.join(tree, file), content ?? fs.readFileSync(file, 'utf8'));
+    }
+    for (const [link, target] of Object.entries(links)) {
+      fs.mkdirSync(path.dirname(path.join(tree, link)), { recursive: true });
+      fs.symlinkSync(target, path.join(tree, link));
+    }
+  };
+  const uninspectedOutcome = (run) => {
+    try {
+      run();
+      return 'returned a result';
+    } catch (error) {
+      return error instanceof UninspectedSourceError ? '' : `threw ${error.message}`;
     }
   };
   const controls = [
@@ -126,14 +142,22 @@ const selfTest = () => {
     ALLOWED,
     true,
   ];
-  const failures = [...controls, wrongModule].flatMap(([description, files, allowed, shouldFail]) => {
-    fixture(files);
+  // `dist` and `node_modules` are skipped by name, so they hold the link targets and the one link that must stay ignored.
+  const forbidden = "import cp from 'child_process'\n";
+  const linkInSkippedDirectory = [
+    'a link inside a skipped root directory',
+    { 'node_modules/pkg/index.js': forbidden },
+    ALLOWED,
+    false,
+    { 'node_modules/.bin/pkg': '../pkg/index.js' },
+  ];
+  const failures = [...controls, wrongModule, linkInSkippedDirectory].flatMap(([description, files, allowed, shouldFail, links]) => {
+    fixture(files, links);
     const found = scan(tree, allowed);
     return found.length > 0 === shouldFail ? [] : [`${description}: ${shouldFail ? 'passed' : 'failed'} (${found.join('; ')})`];
   });
   // Unreadable source: each control holds a forbidden import behind the failing read, injects exactly that error, and
   // requires the scan to throw UninspectedSourceError rather than report a clean tree.
-  const forbidden = "import cp from 'child_process'\n";
   const unreadable = [
     ['an unreadable source file', { 'src/locked.ts': forbidden }, { file: 'src/locked.ts' }],
     ['an unreadable directory', { 'src/locked/inner.ts': forbidden }, { directory: 'src/locked' }],
@@ -141,18 +165,29 @@ const selfTest = () => {
   ].flatMap(([description, files, failOn]) => {
     fixture(files);
     const io = failingIo(failOn);
-    let outcome = 'returned a result';
-    try {
-      scan(tree, ALLOWED, io);
-    } catch (error) {
-      outcome = error instanceof UninspectedSourceError ? '' : `threw ${error.message}`;
-    }
+    const outcome = uninspectedOutcome(() => scan(tree, ALLOWED, io));
     const problems = [];
     if (io.injected.count === 0) problems.push('the injected read error never occurred');
     if (outcome !== '') problems.push(`the scan ${outcome} instead of failing as uninspected`);
     return problems.length === 0 ? [] : [`${description}: ${problems.join('; ')}`];
   });
-  failures.push(...unreadable);
+  // Linked source: each control hides a forbidden import (or nothing) behind a link, checks the link really exists, and
+  // requires the scan to throw UninspectedSourceError rather than skip it.
+  const linked = [
+    ['a linked source file', { 'dist/hidden.js': forbidden }, { 'src/hidden.js': '../dist/hidden.js' }],
+    ['a broken link', {}, { 'src/hidden.js': '../dist/missing.js' }],
+    ['a linked directory', { 'dist/hidden.js': forbidden }, { 'src/linked': '../dist' }],
+    ['a linked directory at the root', { 'dist/hidden.js': forbidden }, { lib: 'dist' }],
+    ['a link with a non-source name', { 'dist/hidden.js': forbidden }, { 'src/notes.txt': '../dist/hidden.js' }],
+  ].flatMap(([description, files, links]) => {
+    fixture(files, links);
+    const problems = [];
+    if (!Object.keys(links).every((link) => fs.lstatSync(path.join(tree, link)).isSymbolicLink())) problems.push('the link was not created');
+    const outcome = uninspectedOutcome(() => scan(tree, ALLOWED));
+    if (outcome !== '') problems.push(`the scan ${outcome} instead of failing as uninspected`);
+    return problems.length === 0 ? [] : [`${description}: ${problems.join('; ')}`];
+  });
+  failures.push(...unreadable, ...linked);
   fs.rmSync(tmp, { recursive: true, force: true });
   failures.forEach((failure) => console.error(`self-test failed: ${failure}`));
   return failures.length === 0;

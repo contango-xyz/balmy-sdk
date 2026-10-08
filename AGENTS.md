@@ -27,7 +27,7 @@ scripts/check-network-guard.sh                   # proves both guard layers stop
 
 `test/setup/deny-network.ts` runs before every test: any outbound TCP, DNS or UDP attempt throws and fails the test, even when the caller catches the error. Use in-memory fixtures or a local server on `127.0.0.1`. Live provider and RPC tests are not part of this repository.
 
-Only the two reviewed guard files may load `child_process`, `worker_threads`, `cluster` or `dgram`; `scripts/check-bypass-imports.js` enforces that.
+Only the two reviewed guard files may load `child_process`, `worker_threads`, `cluster` or `dgram`; `scripts/check-bypass-imports.js` enforces that and fails on any symbolic link in the source tree, which it does not follow.
 
 ## CI
 
