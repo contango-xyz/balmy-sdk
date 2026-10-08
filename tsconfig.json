@@ -25,7 +25,7 @@
       "@chains": ["src/chains"],
       "@types": ["src/types"],
       "@utility-types": ["src/utility-types"],
-      "@test-utils/*": ["test/utils/*", "test/integration/utils/*"]
+      "@test-utils/*": ["test/utils/*"]
     }
   },
   "include": ["src"]

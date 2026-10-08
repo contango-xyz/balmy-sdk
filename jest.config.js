@@ -11,5 +11,6 @@ module.exports = {
   coverageDirectory: 'coverage',
   collectCoverageFrom: ['src/**/*.ts', 'src/**/*.js'],
   testMatch: ['**/*.spec.(ts)'],
+  setupFilesAfterEnv: ['<rootDir>/test/setup/deny-network.ts'],
   testEnvironment: 'node',
 };
