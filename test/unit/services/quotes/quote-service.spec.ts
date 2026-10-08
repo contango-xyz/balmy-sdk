@@ -10,9 +10,32 @@ import { BaseTokenMetadata } from '@services/metadata/types';
 import { CHANGELLY_METADATA } from '@services/quotes/quote-sources/changelly-quote-source';
 import { SourceListQuoteResponse } from '@services/quotes/source-lists/types';
 import chaiAsPromised from 'chai-as-promised';
+import { jsonResponse, okxFixture } from './sources/fixtures/okx';
+import deprecation from './sources/fixtures/okx-deprecation.json';
 chai.use(chaiAsPromised);
 
 describe('Quote Service', () => {
+  it('keeps the viable source eligible for best quote when OKX returns its HTTP-200 deprecation envelope', async () => {
+    const { source, params } = okxFixture(() => jsonResponse(deprecation));
+    const service = new QuoteService({
+      sourceList: {
+        ...SOURCE_LIST,
+        supportedSources: () => ({ source: CHANGELLY_METADATA, 'okx-dex': source.getMetadata() }),
+        getQuotes: () => ({ source: Promise.resolve(RESPONSE), 'okx-dex': source.quote(params).then(() => RESPONSE) }),
+      },
+      metadataService: METADATA_SERVICE,
+      priceService: PRICE_SERVICE,
+      gasService: GAS_SERVICE,
+      defaultConfig: undefined,
+    });
+    expect((await service.getBestQuote(REQUEST)).source.id).to.equal('source');
+    const quotes = await service.getAllQuotes({ ...REQUEST, config: { ignoredFailed: false } });
+    expect(quotes).to.have.lengthOf(2);
+    expect(quotes[0].source.id).to.equal('source');
+    expect(quotes[1]).to.include({ failed: true });
+    expect(quotes[1].source.id).to.equal('okx-dex');
+  });
+
   when('request fails', () => {
     then('it is returned as a failed quote', async () => {
       const sourceList = new QuoteService({

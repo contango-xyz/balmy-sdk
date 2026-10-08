@@ -7,8 +7,10 @@ import { IFetchService } from '@services/fetch';
 import { Address, ChainId, TimeString } from '@types';
 import { Addresses, Uint } from '@shared/constants';
 import { isSameAddress } from '@shared/utils';
+import { ValidateFunction } from 'ajv';
+import { isOKXApprovalResponse, isOKXSwapResponse } from './okx-dex-response';
 
-// https://www.okx.com/web3/build/docs/waas/okx-waas-supported-networks
+// Live chain support remains unverified; see docs/okx-v6-offline.md.
 const SUPPORTED_CHAINS = [
   Chains.ETHEREUM,
   Chains.OPTIMISM,
@@ -48,7 +50,7 @@ export class OKXDexQuoteSource implements IQuoteSource<OKXDexSupport, OKXDexConf
   }
 
   async quote({ components, request, config }: QuoteParams<OKXDexSupport, OKXDexConfig>): Promise<SourceQuoteResponse<OKXDexData>> {
-    const [approvalTargetResponse, quoteResponse] = await Promise.all([
+    const [approvalTarget, quoteResponse] = await Promise.all([
       calculateApprovalTarget({ components, request, config }),
       calculateQuote({ components, request, config }),
     ]);
@@ -60,10 +62,6 @@ export class OKXDexQuoteSource implements IQuoteSource<OKXDexSupport, OKXDexConf
         },
       ],
     } = quoteResponse;
-    const {
-      data: [{ dexContractAddress: approvalTarget }],
-    } = approvalTargetResponse;
-
     return {
       sellAmount: request.order.sellAmount,
       maxSellAmount: request.order.sellAmount,
@@ -106,16 +104,16 @@ async function calculateApprovalTarget({
   config,
 }: QuoteParams<OKXDexSupport, OKXDexConfig>) {
   if (isSameAddress(sellToken, Addresses.NATIVE_TOKEN)) {
-    return { data: [{ dexContractAddress: Addresses.ZERO_ADDRESS }] };
+    return Addresses.ZERO_ADDRESS;
   }
   const queryParams = {
-    chainId,
+    chainIndex: chainId.toString(),
     tokenContractAddress: sellToken,
-    approveAmount: Uint.MAX_256,
+    approveAmount: Uint.MAX_256.toString(),
   };
   const queryString = qs.stringify(queryParams, { skipNulls: true, arrayFormat: 'comma' });
-  const path = `/api/v5/dex/aggregator/approve-transaction?${queryString}`;
-  return fetch({
+  const path = `/api/v6/dex/aggregator/approve-transaction?${queryString}`;
+  const response = await fetch({
     sellToken,
     buyToken,
     chainId,
@@ -123,7 +121,9 @@ async function calculateApprovalTarget({
     timeout,
     config,
     fetchService,
+    validate: isOKXApprovalResponse,
   });
+  return response.data[0].dexContractAddress;
 }
 
 async function calculateQuote({
@@ -139,16 +139,16 @@ async function calculateQuote({
   config,
 }: QuoteParams<OKXDexSupport, OKXDexConfig>) {
   const queryParams = {
-    chainIndex: chainId,
+    chainIndex: chainId.toString(),
     amount: order.sellAmount.toString(),
     fromTokenAddress: sellToken,
     toTokenAddress: buyToken,
-    slippage: slippagePercentage / 100,
+    slippagePercent: slippagePercentage.toString(),
     userWalletAddress: takeFrom,
     swapReceiverAddress: recipient,
   };
   const queryString = qs.stringify(queryParams, { skipNulls: true, arrayFormat: 'comma' });
-  const path = `/api/v5/dex/aggregator/swap?${queryString}`;
+  const path = `/api/v6/dex/aggregator/swap?${queryString}`;
   return fetch({
     sellToken,
     buyToken,
@@ -157,10 +157,11 @@ async function calculateQuote({
     timeout,
     config,
     fetchService,
+    validate: isOKXSwapResponse,
   });
 }
 
-async function fetch({
+async function fetch<T>({
   sellToken,
   buyToken,
   chainId,
@@ -168,6 +169,7 @@ async function fetch({
   fetchService,
   config,
   timeout,
+  validate,
 }: {
   sellToken: Address;
   buyToken: Address;
@@ -176,6 +178,7 @@ async function fetch({
   timeout?: TimeString;
   config: OKXDexConfig;
   fetchService: IFetchService;
+  validate: ValidateFunction<T>;
 }) {
   const timestamp = new Date().toISOString();
   const toHash = timestamp + 'GET' + path;
@@ -190,9 +193,15 @@ async function fetch({
   };
 
   const url = `https://web3.okx.com${path}`;
-  const response = await fetchService.fetch(url, { timeout, headers });
+  const response = await fetchService
+    .fetch(url, { timeout, headers })
+    .catch(() => failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'OKX request failed'));
   if (!response.ok) {
-    failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, await response.text());
+    failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'OKX HTTP request failed');
   }
-  return response.json();
+  const body: unknown = await response.json().catch(() => failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'Invalid OKX JSON response'));
+  if (!validate(body)) {
+    failed(OKX_DEX_METADATA, chainId, sellToken, buyToken, 'Invalid OKX response');
+  }
+  return body;
 }
