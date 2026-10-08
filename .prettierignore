@@ -3,7 +3,6 @@ dist
 workspace.code-workspace
 CHANGELOG.md
 .DS_STORE
-.husky
 .gitignore
 .gitattributes
 .versionrc
