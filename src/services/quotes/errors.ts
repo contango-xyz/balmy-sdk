@@ -2,6 +2,15 @@ import { ChainId, TokenAddress } from '@types';
 import { SourceId } from './types';
 import { getChainByKey } from '@chains';
 
+export class GasDataUnavailableError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super('Failed to fetch gas data');
+    this.cause = cause;
+  }
+}
+
 export class SourceNotFoundError extends Error {
   constructor(sourceId: SourceId) {
     super(`Could not find a source with id '${sourceId}'`);

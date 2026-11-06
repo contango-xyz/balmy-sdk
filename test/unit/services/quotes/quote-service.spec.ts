@@ -9,6 +9,7 @@ import { IMetadataService } from '@services/metadata';
 import { BaseTokenMetadata } from '@services/metadata/types';
 import { CHANGELLY_METADATA } from '@services/quotes/quote-sources/changelly-quote-source';
 import { SourceListQuoteResponse } from '@services/quotes/source-lists/types';
+import { GasDataUnavailableError } from '@services/quotes';
 import chaiAsPromised from 'chai-as-promised';
 import { jsonResponse, okxFixture } from './sources/fixtures/okx';
 import deprecation from './sources/fixtures/okx-deprecation.json';
@@ -61,7 +62,38 @@ describe('Quote Service', () => {
       });
       const quotes = sourceList.getQuotes(REQUEST);
       expect(Object.keys(quotes)).to.have.lengthOf(1);
-      await expect(quotes.source).to.have.rejectedWith('Failed to fetch gas data');
+      await expect(quotes.source).to.have.rejectedWith(GasDataUnavailableError, 'Failed to fetch gas data');
+      try {
+        await quotes.source;
+      } catch (error) {
+        expect((error as GasDataUnavailableError).cause).to.equal(GAS_FAILURE);
+      }
+    });
+    then('an opted-in caller receives the independent quote without gas', async () => {
+      const service = new QuoteService({
+        sourceList: SOURCE_LIST,
+        gasService: FAILING_GAS_SERVICE,
+        metadataService: METADATA_SERVICE,
+        priceService: PRICE_SERVICE,
+        defaultConfig: undefined,
+        allowMissingOptionalGas: true,
+      });
+      const quote = await service.getQuotes(REQUEST).source;
+      expect(quote.gas).to.equal(undefined);
+      expect(quote.buyAmount.amount).to.equal(RESPONSE.buyAmount);
+    });
+    then('an explicit required speed still fails for an opted-in caller', async () => {
+      const service = new QuoteService({
+        sourceList: SOURCE_LIST,
+        gasService: FAILING_GAS_SERVICE,
+        metadataService: METADATA_SERVICE,
+        priceService: PRICE_SERVICE,
+        defaultConfig: undefined,
+        allowMissingOptionalGas: true,
+      });
+      await expect(
+        service.getQuotes({ request: { ...REQUEST.request, gasSpeed: { speed: 'standard', requirement: 'required' } } }).source
+      ).to.have.rejectedWith(GasDataUnavailableError);
     });
   });
   when('request works but metadata request fails', () => {
@@ -180,7 +212,8 @@ const GAS_SERVICE: IGasService<DefaultGasValues> = {
     Promise.reject(new Error('Should not be called')),
   getQuickGasCalculator: (_: { chainId: ChainId }) => Promise.resolve(GAS_CALCULATOR) as any,
 };
+const GAS_FAILURE = new Error('Failed');
 const FAILING_GAS_SERVICE: IGasService<DefaultGasValues> = {
   ...GAS_SERVICE,
-  getQuickGasCalculator: (_: { chainId: ChainId }) => Promise.reject(new Error('Failed')),
+  getQuickGasCalculator: (_: { chainId: ChainId }) => Promise.reject(GAS_FAILURE),
 };
