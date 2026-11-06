@@ -36,7 +36,7 @@ export type QuoteSourceListInput =
       };
     };
 
-export type BuildQuoteParams = { sourceList: QuoteSourceListInput; defaultConfig?: SourceConfig };
+export type BuildQuoteParams = { sourceList: QuoteSourceListInput; defaultConfig?: SourceConfig; allowMissingOptionalGas?: boolean };
 
 export function buildQuoteService(
   params: BuildQuoteParams | undefined,
@@ -52,6 +52,7 @@ export function buildQuoteService(
     gasService,
     metadataService,
     sourceList,
+    allowMissingOptionalGas: params?.allowMissingOptionalGas,
     defaultConfig: {
       global: addReferrerIfNotSet(params?.defaultConfig?.global),
       custom: params?.defaultConfig?.custom,

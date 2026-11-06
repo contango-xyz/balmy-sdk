@@ -25,7 +25,7 @@ import { formatUnits } from 'viem';
 import { TriggerablePromise } from '@shared/triggerable-promise';
 import { couldSupportMeetRequirements } from '@shared/requirements-and-support';
 import { SourceConfig } from './source-registry';
-import { FailedToGenerateAnyQuotesError } from './errors';
+import { FailedToGenerateAnyQuotesError, GasDataUnavailableError } from './errors';
 import merge from 'deepmerge';
 
 const REQUIREMENTS: FieldsRequirements<BaseTokenMetadata> = {
@@ -39,6 +39,7 @@ type ConstructorParameters = {
   metadataService: IMetadataService<BaseTokenMetadata>;
   sourceList: IQuoteSourceList;
   defaultConfig: SourceConfig | undefined;
+  allowMissingOptionalGas?: boolean;
 };
 export class QuoteService implements IQuoteService {
   private readonly priceService: IPriceService;
@@ -46,13 +47,15 @@ export class QuoteService implements IQuoteService {
   private readonly metadataService: IMetadataService<BaseTokenMetadata>;
   private readonly sourceList: IQuoteSourceList;
   private readonly defaultConfig: SourceConfig | undefined;
+  private readonly allowMissingOptionalGas: boolean;
 
-  constructor({ priceService, gasService, metadataService, sourceList, defaultConfig }: ConstructorParameters) {
+  constructor({ priceService, gasService, metadataService, sourceList, defaultConfig, allowMissingOptionalGas = false }: ConstructorParameters) {
     this.priceService = priceService;
     this.gasService = gasService;
     this.metadataService = metadataService;
     this.sourceList = sourceList;
     this.defaultConfig = defaultConfig;
+    this.allowMissingOptionalGas = allowMissingOptionalGas;
   }
 
   supportedSources() {
@@ -242,18 +245,16 @@ export class QuoteService implements IQuoteService {
     response: Promise<SourceListQuoteResponse>;
     promises: Promises;
   }): Promise<QuoteResponse> {
-    const [response, tokens, prices, gasCalculator] = await Promise.all([
-      responsePromise,
-      promises.tokens,
-      promises.prices,
-      promises.gasCalculator,
-    ]);
+    const [response, tokens, prices, gasResult] = await Promise.all([responsePromise, promises.tokens, promises.prices, promises.gasCalculator]);
     if (!tokens) throw new Error(`Failed to fetch the quote's tokens`);
-    if (!gasCalculator) throw new Error(`Failed to fetch gas data`);
+    if (gasResult.status === 'rejected' && (!this.allowMissingOptionalGas || request.gasSpeed?.requirement === 'required')) {
+      throw new GasDataUnavailableError(gasResult.reason);
+    }
+    const gasCalculator = gasResult.status === 'fulfilled' ? gasResult.value : undefined;
     const sellToken = { ...tokens[request.sellToken], price: prices?.[request.sellToken]?.price };
     const buyToken = { ...tokens[request.buyToken], price: prices?.[request.buyToken]?.price };
     let gas: QuoteResponse['gas'];
-    if (response.estimatedGas) {
+    if (response.estimatedGas && gasCalculator) {
       // Note: some sources provide a tx as part of the custom data, so we'll pass it just in case
       const gasCost = gasCalculator.calculateGasCost({ gasEstimation: response.estimatedGas, tx: response.customData.tx });
       const { gasCostNativeToken } = gasCost[request.gasSpeed?.speed ?? 'standard'] ?? gasCost['standard'];
@@ -342,7 +343,10 @@ export class QuoteService implements IQuoteService {
           },
         },
       })
-      .catch(() => undefined);
+      .then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason })
+      );
 
     return {
       promises: { tokens, prices, gasCalculator },
@@ -355,9 +359,9 @@ export class QuoteService implements IQuoteService {
           })
         ),
         gasPrice: new TriggerablePromise(() =>
-          gasCalculator.then((calculator) => {
-            if (!calculator) return Promise.reject(new Error(`Failed to fetch gas data`));
-            const gasPrice = calculator.getGasPrice();
+          gasCalculator.then((result) => {
+            if (result.status === 'rejected') throw new GasDataUnavailableError(result.reason);
+            const gasPrice = result.value.getGasPrice();
             return gasPrice[selectedGasSpeed] ?? gasPrice['standard']!;
           })
         ),
@@ -439,5 +443,5 @@ export function handleResponseFailure<Response>(sourceId: SourceId, response: Pr
 type Promises = {
   tokens: Promise<Record<TokenAddress, BaseTokenMetadata> | undefined>;
   prices: Promise<Record<TokenAddress, PriceResult> | undefined>;
-  gasCalculator: Promise<IQuickGasCostCalculator<DefaultGasValues> | undefined>;
+  gasCalculator: Promise<{ status: 'fulfilled'; value: IQuickGasCostCalculator<DefaultGasValues> } | { status: 'rejected'; reason: unknown }>;
 };
